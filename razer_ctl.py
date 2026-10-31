@@ -106,6 +106,38 @@ IOC_WRITE = 1
 HIDIOCSFEATURE_91 = _IOC(IOC_READ | IOC_WRITE, 'H', 0x06, 91)
 HIDIOCGFEATURE_91 = _IOC(IOC_READ | IOC_WRITE, 'H', 0x07, 91)
 
+RAZER_REPORT_LEN = 90
+
+
+def _feature_report_lengths(sysfs_path):
+    """Byte length of each feature report a hidraw node's HID descriptor declares, keyed by report ID."""
+    try:
+        with open(os.path.join(sysfs_path, "device", "report_descriptor"), "rb") as f:
+            desc = f.read()
+    except OSError:
+        return {}
+    bits = {}
+    report_id = report_size = report_count = 0
+    i = 0
+    while i < len(desc):
+        prefix = desc[i]
+        if prefix == 0xFE:  # Long item: skip its data
+            i += 3 + (desc[i + 1] if i + 1 < len(desc) else 0)
+            continue
+        size = (0, 1, 2, 4)[prefix & 0x03]
+        value = int.from_bytes(desc[i + 1:i + 1 + size], "little")
+        i += 1 + size
+        item = prefix & 0xFC
+        if item == 0x84:    # Report ID
+            report_id = value
+        elif item == 0x74:  # Report Size (bits)
+            report_size = value
+        elif item == 0x94:  # Report Count
+            report_count = value
+        elif item == 0xB0:  # Feature
+            bits[report_id] = bits.get(report_id, 0) + report_size * report_count
+    return {rid: total // 8 for rid, total in bits.items()}
+
 # Default Profiles
 DEFAULT_PROFILES_DATA = {
     "activeProfile": "onboard-3",
@@ -245,7 +277,8 @@ class RazerDeviceManager:
                         "name": clean_name,
                         "vid": vid,
                         "pid": pid,
-                        "interface": interface
+                        "interface": interface,
+                        "has_control": _feature_report_lengths(path).get(0, 0) >= RAZER_REPORT_LEN
                     })
             except Exception:
                 continue
@@ -262,8 +295,16 @@ class RazerDeviceManager:
             }
             return
 
-        # Sort candidates: prefer interface 0 or highest feature support
-        # Usually interface 0 or 2 has feature report capabilities
+        # Only the interface whose descriptor declares the 90-byte feature report
+        # answers Razer commands: interface 0 on some models, interface 3 on the
+        # Basilisk V3. A report sent to any other interface goes unanswered until
+        # the 5s USB timeout, and while it waits the kernel's hidraw lock stalls
+        # every other program opening a HID device. Keep the other interfaces only
+        # when no descriptor declares the report.
+        control = [c for c in candidates if c["has_control"]]
+        if control:
+            candidates = control
+
         # A wireless Razer mouse exposes a second, wired PID while the cable is
         # in, and that interface is the live one: the dongle's battery report
         # parks at 0 (measured on the Naga Pro -- charge_level fell 12 -> 0 on

@@ -2,6 +2,11 @@
 
 All notable changes to Oma Razer Control are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Control interface detection in `razer_ctl.py`**: commands now go to the hidraw node whose HID report descriptor declares the 90-byte Razer feature report, instead of the first accessible node. On mice whose control channel is not the first interface (the Basilisk V3 uses interface 3), every command went unanswered until the 5s USB timeout, so status never returned and each poll stalled every other program opening a HID device (for example WebKitGTK apps freezing while enumerating gamepads).
+
 ## [2.0.2] - 2026-10-28
 
 ### Security & Hardening
